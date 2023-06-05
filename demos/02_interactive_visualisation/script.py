@@ -32,6 +32,34 @@ class FirstOrderLag:
     self.s = np.clip(self.s, self.bounds[0], self.bounds[1])
     
     
+class Register:
+  """ Register agent. Updates the state when action is not None and returns the
+      last state on each step.
+  """
+  
+  def __init__(self, s0=0, bounds=None):
+    self.s0 = s0
+    self.bounds = bounds
+    self.s = None # state
+    
+  def reset(self):
+    self.s = self.s0
+    self._clip()
+    return self.s
+    
+  def step(self, action=None):
+    if action is not None:
+      self.s = action
+      
+    self._clip()
+    return self.s
+  
+  def _clip(self):
+    if self.bounds is None:
+      return
+    
+    self.s = np.clip(self.s, self.bounds[0], self.bounds[1])
+    
     
 class HarmonicOscillator():
     
@@ -53,7 +81,7 @@ class HarmonicOscillator():
       
       self.x = None
       self.v = None
-      self.anchor_start = 0
+      self.anchor = 0
       
     def frequency(self):
       return 1/(2*np.pi) * np.sqrt(self.spring / self.mass)
@@ -84,7 +112,6 @@ class HarmonicOscillator():
       return a
     
     def reset(self):
-      self.anchor = self.anchor_start
       self.mass = self.mass_start * np.ones(self.N)
       self.spring = self.spring_start * np.ones(self.N)
       self.damping = self.damping_start * np.ones(self.N)
@@ -144,17 +171,20 @@ class TargetGenerator():
     return {'s': self.s, 's_one_hot': self.s_one_hot}
   
     
-def init(num_targets=8, trigger_threshold=0.2):
+def init(is_user_human, num_targets=8, trigger_threshold=0.2):
 
   agents = {
-    'ui': HarmonicOscillator(N=num_targets),
+    # mass corresponding to 0.5Hz oscillation and dt matching update frequency.
+    'ui': HarmonicOscillator(N=num_targets, mass=0.1, dt=0.02),
     # generate target for user
     'user_target': TargetGenerator(num_targets),
     # close the loop with a first-order lag user
-    'user': FirstOrderLag(conductivity=0.2, s0 = 0, bounds=[-4,4])
+    'sim_user': FirstOrderLag(conductivity=0.1, s0 = 0, bounds=[-4,4]),
+    'human_user': Register(s0=0, bounds=[-4,4])
   }
+  # close the loop with human user
   # filter energy for selection trigger
-  agents['trigger_in'] = FirstOrderLag(conductivity=0.1, s0 = np.ones(num_targets) * agents['ui'].energy_start)
+  agents['trigger_in'] = FirstOrderLag(conductivity=0.05, s0 = np.ones(num_targets) * agents['ui'].energy_start)
   # trigger by thresholding
   agents['trigger_out'] = lambda inputs: inputs < trigger_threshold
   
@@ -164,31 +194,34 @@ def init(num_targets=8, trigger_threshold=0.2):
 def reset(agents):
   o = {}
   o['ui'] = agents['ui'].reset()
-  o['user'] = agents['user'].reset()
+  o['sim_user'] = agents['sim_user'].reset()
+  o['human_user'] = agents['human_user'].reset()
   o['user_target'] = agents['user_target'].reset()
   o['trigger_in'] = agents['trigger_in'].reset()
   o['trigger_out'] = agents['trigger_out'](o['trigger_in'])
   return o
 
 
-def step(agents, a):
+def _step(is_user_human, agents, a):
   global user_target
   o = {}
+  
+  o['user_target'] = agents['user_target'].step(a['trigger_out'])
+  o['human_user'] = agents['human_user'].step()
+  o['sim_user'] = agents['sim_user'].step(a['ui']['x'][o['user_target']['s']])
   
   # reset UI if event has been triggered
   if a['trigger_out'].sum() > 0:
     agents['ui'].reset()
     agents['trigger_in'].reset()
 
-  o['ui'] = agents['ui'].step(a['user'])
+  o['ui'] = agents['ui'].step(a['human_user'] if is_user_human else a['sim_user'])
   o['trigger_in'] = agents['trigger_in'].step(o['ui']['debug']['energy'])
   o['trigger_out'] = agents['trigger_out'](o['trigger_in'])
   
-  # resample user goal if their target has been triggered
-  o['user_target'] = agents['user_target'].step(a['trigger_out'])
-  o['user'] = agents['user'].step(o['ui']['x'][o['user_target']['s']])
-  
   return o
   
-agents = init()
+is_user_human = True
+agents = init(is_user_human)
 o = reset(agents)
+step = lambda agents, a: _step(is_user_human, agents, a)

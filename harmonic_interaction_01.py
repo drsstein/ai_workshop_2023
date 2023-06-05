@@ -147,14 +147,15 @@ class TargetGenerator():
 def init(num_targets=8, trigger_threshold=0.2):
 
   agents = {
-    'ui': HarmonicOscillator(N=num_targets),
+    # mass corresponding to 0.5Hz frequency and dt matching update frequency
+    'ui': HarmonicOscillator(N=num_targets, mass=0.1, dt=0.02),
     # generate target for user
     'user_target': TargetGenerator(num_targets),
     # close the loop with a first-order lag user
-    'user': FirstOrderLag(conductivity=0.2, s0 = 0, bounds=[-4,4])
+    'user': FirstOrderLag(conductivity=0.1, s0 = 0, bounds=[-4,4])
   }
   # filter energy for selection trigger
-  agents['trigger_in'] = FirstOrderLag(conductivity=0.1, s0 = np.ones(num_targets) * agents['ui'].energy_start)
+  agents['trigger_in'] = FirstOrderLag(conductivity=0.05, s0 = np.ones(num_targets) * agents['ui'].energy_start)
   # trigger by thresholding
   agents['trigger_out'] = lambda inputs: inputs < trigger_threshold
   

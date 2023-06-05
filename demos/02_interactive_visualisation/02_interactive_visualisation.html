@@ -9,8 +9,9 @@
 <body style="background-color: black; color: white; font-family: monospace;">
 <h1>Interactive Python</h1>
 <p id="output"></p>
-<div id="status"" style="white-space: pre-wrap;"> </div><br>
-<svg id="figure" width="800" height="800" style="border: 1px solid black; background-color: white;"></svg>
+<div id="status" style="white-space: pre-wrap;"> </div><br>
+<svg id="figure" width="800" height="800" style="border: 1px solid black; background-color: white;"></svg><br>
+<svg id="feedback" width="800" height="50" style="border: 1px solid black; background-color: white;"></svg>
 
 <script>
 
@@ -20,6 +21,10 @@ const FACTOR = 50;
 const CENTER = 400;
 function pyToUI(x) {
     return FACTOR * x + CENTER;
+}
+
+function uiToPy(x) {
+    return (x - CENTER) / FACTOR;
 }
 
 // get user state
@@ -36,15 +41,25 @@ function update_simulation() {
                 agent = document.getElementById("ui_"+i);
                 agent.setAttribute("cy", Math.trunc( pyToUI(targetPositions[i] )));
             }
-            
-            pjs.run("o['user'].item()").then((userState) => {
-                const userY = pyToUI(userState);
+            // update anchor position
+            pjs.run("agents['ui'].anchor").then((anchor) => {
+                const userY = pyToUI(anchor);
                 line = document.getElementById("user");
                 line.setAttribute("y1", userY);
                 line.setAttribute("y2", userY);
             });
-            
-        })
+            // update selection position
+            const wasTriggered = pjs.get('o').toJs().get('trigger_out');
+            if (wasTriggered.reduce((acc, next) => acc || next, false)) {
+                for (let i = 0; i < wasTriggered.length; i++) {
+                    feedback = document.getElementById('feedback_'+i);
+                    feedback.setAttribute('style', 'fill: white');
+                    if (wasTriggered[i]) {
+                        feedback.setAttribute('style', 'fill: black');
+                    }
+                }
+            }            
+        });
 }
 
 async function main_spring() {
@@ -82,12 +97,43 @@ async function main_spring() {
         var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         circle.setAttribute('cx', (i+1) * distance);
         circle.setAttribute('cy', 0);
-        circle.setAttribute('r', 10);
+        circle.setAttribute('r', Math.floor(distance/4));
         circle.setAttribute('id', "ui_"+i);
         // random color
         circle.setAttribute('style', 'fill: #'+Math.floor(Math.random()*16777215).toString(16) );
         svg.appendChild(circle);
     }
+    
+    //attach mouse callback to svg
+    svg.onmousemove = function(event){
+        const amplification = 1.0;
+		const box = event.currentTarget.getBoundingClientRect();
+		const centerX = (box.left + box.right)/2;
+		const centerY = (box.bottom + box.top)/2;
+		const width = (box.right - box.left);
+		const height = (box.bottom - box.top);
+        const user = [
+            width/2 + (event.clientX - centerX),
+			height/2 + (event.clientY - centerY)
+        ];
+        console.log('mouse '+ user[1]);
+        pjs.run("agents['human_user'].step(" + uiToPy(user[1]) + ")");
+    };
+    
+    // create feedback representation
+    svg = document.getElementById("feedback");
+    for (var i = 0; i < numTargets; i++) {
+        var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        circle.setAttribute('cx', (i+1) * distance);
+        circle.setAttribute('cy', Math.floor(distance/4)+2);
+        circle.setAttribute('r', Math.floor(distance/4));
+        circle.setAttribute('id', "feedback_"+i);
+        // random color
+        circle.setAttribute('style', 'stroke: black; fill: white');
+        svg.appendChild(circle);
+    }
+    
+    
     
     // start update loop
     setInterval(update_simulation, 20);
