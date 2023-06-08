@@ -17,48 +17,69 @@ class FirstOrderLag:
     
   def reset(self):
     self.s = np.copy(self.s0)
-    self._clip()
-    return self.s
+    self.s = self._clip(self.s)
+    return {'x': self.s, 'dx': np.zeros_like(self.s)}
   
   def step(self, u):
-    self.s = (1-self.k) * self.s + self.k * u
-    self._clip()
-    return self.s
+    s = (1-self.k) * self.s + self.k * u
+    s = self._clip(s)
+    ds = s - self.s
+    self.s = s
+    return {'x': self.s, 'dx': ds}
   
-  def _clip(self):
+  def _clip(self, s):
     if self.bounds is None:
-      return
+      return s
     
-    self.s = np.clip(self.s, self.bounds[0], self.bounds[1])
-    
-    
-class Register:
-  """ Register agent. Updates the state when action is not None and returns the
-      last state on each step.
-  """
+    return np.clip(s, self.bounds[0], self.bounds[1])
   
-  def __init__(self, s0=0, bounds=None):
-    self.s0 = s0
-    self.bounds = bounds
-    self.s = None # state
+
+class Gaussian:
+  """ Gaussian agent. Adds Gaussian noise to its input. """
+  def __init__(self, stdev=1., a0=0, seed=None, mode='additive'):
+    self.stdev = stdev
+    self.a0 = a0 # assumed starting input
+    self.seed = seed
+    self.mode = mode # {'additive', 'scaled'}
+    
+    self.rng = np.random.default_rng(self.seed)
+    self.sample = self._sample_additive
+    if self.mode == 'multiply':
+      self.sample = self._sample_multiplicative
     
   def reset(self):
-    self.s = self.s0
-    self._clip()
-    return self.s
-    
-  def step(self, action=None):
-    if action is not None:
-      self.s = action
-      
-    self._clip()
-    return self.s
+    return self.sample(self.a0)
   
-  def _clip(self):
-    if self.bounds is None:
-      return
+  def step(self, a):
+    return self.sample(a)
+  
+  def _sample_additive(self, a):
+    return a + self.rng.normal(size=np.asarray(a).shape) * self.stdev
+  
+  def _sample_multiplicative(self, a):
+    return a * self.rng.normal(size=np.asarray(a).shape) * self.stdev
+  
+  
+class NoisyLag:
+  """ 
+  First-order lag on noisy observations. 
+  Used as a model for user input. 
+  """
+  
+  def __init__(self, noise, lag):
+    self.noise = noise
+    self.lag = lag
     
-    self.s = np.clip(self.s, self.bounds[0], self.bounds[1])
+  def reset(self):
+    # treat lag value as noisy observation of the state
+    x = self.lag.reset()['x']
+    x_noisy = self.noise.step(x)
+    self.lag.s = x_noisy
+    return x_noisy
+    
+  def step(self, action):
+    x_noisy = self.noise.step(action)
+    return self.lag.step(x_noisy)['x']
     
     
 class HarmonicOscillator():
@@ -81,7 +102,8 @@ class HarmonicOscillator():
       
       self.x = None
       self.v = None
-      self.anchor = 0
+      self.anchor_start = 0
+      self.anchor = self.anchor_start
       
     def frequency(self):
       return 1/(2*np.pi) * np.sqrt(self.spring / self.mass)
@@ -170,23 +192,55 @@ class TargetGenerator():
   def observation(self):
     return {'s': self.s, 's_one_hot': self.s_one_hot}
   
+  
+class Register:
+  """ Register agent. Updates its state to action when action is not None,
+      returns the last state on each step. Used to buffer user input.
+  """
+  
+  def __init__(self, s0=0, bounds=None):
+    self.s0 = s0
+    self.bounds = bounds
+    self.s = None # state
     
-def init(is_user_human, num_targets=8, trigger_threshold=0.2):
+  def reset(self):
+    self.s = self.s0
+    self._clip()
+    return self.s
+    
+  def step(self, action=None):
+    if action is not None:
+      self.s = action
+      
+    self._clip()
+    return self.s
+  
+  def _clip(self):
+    if self.bounds is None:
+      return
+    
+    self.s = np.clip(self.s, self.bounds[0], self.bounds[1])
+  
+
+def init(is_user_human=False, num_targets=8, trigger_threshold=0.2):
+  user_lag = FirstOrderLag(conductivity=0.1, s0 = 0, bounds=[-200,200])
+  user_noise = Gaussian(stdev=20.)
+  sim_user = NoisyLag(lag=user_lag, noise=user_noise)
 
   agents = {
     # mass corresponding to 0.5Hz oscillation and dt matching update frequency.
-    'ui': HarmonicOscillator(N=num_targets, mass=0.1, dt=0.02),
+    'ui': HarmonicOscillator(N=num_targets, mass=0.1, dt=0.02, energy_start=3e3, energy_max=6e3),
     # generate target for user
     'user_target': TargetGenerator(num_targets),
     # close the loop with a first-order lag user
-    'sim_user': FirstOrderLag(conductivity=0.1, s0 = 0, bounds=[-4,4]),
-    'human_user': Register(s0=0, bounds=[-4,4])
+    'sim_user': sim_user,
+    'human_user': Register(s0=0, bounds=[-200, 200])
   }
   # close the loop with human user
   # filter energy for selection trigger
   agents['trigger_in'] = FirstOrderLag(conductivity=0.05, s0 = np.ones(num_targets) * agents['ui'].energy_start)
   # trigger by thresholding
-  agents['trigger_out'] = lambda inputs: inputs < trigger_threshold
+  agents['trigger_out'] = lambda inputs: inputs < trigger_threshold * agents['ui'].energy_start
   
   return agents
 
@@ -197,7 +251,7 @@ def reset(agents):
   o['sim_user'] = agents['sim_user'].reset()
   o['human_user'] = agents['human_user'].reset()
   o['user_target'] = agents['user_target'].reset()
-  o['trigger_in'] = agents['trigger_in'].reset()
+  o['trigger_in'] = agents['trigger_in'].reset()['x']
   o['trigger_out'] = agents['trigger_out'](o['trigger_in'])
   return o
 
@@ -216,12 +270,12 @@ def _step(is_user_human, agents, a):
     agents['trigger_in'].reset()
 
   o['ui'] = agents['ui'].step(a['human_user'] if is_user_human else a['sim_user'])
-  o['trigger_in'] = agents['trigger_in'].step(o['ui']['debug']['energy'])
+  o['trigger_in'] = agents['trigger_in'].step(o['ui']['debug']['energy'])['x']
   o['trigger_out'] = agents['trigger_out'](o['trigger_in'])
   
   return o
   
-is_user_human = True
+is_user_human = False
 agents = init(is_user_human)
 o = reset(agents)
 step = lambda agents, a: _step(is_user_human, agents, a)
