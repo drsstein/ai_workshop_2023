@@ -222,8 +222,8 @@ class Register:
     self.s = np.clip(self.s, self.bounds[0], self.bounds[1])
   
 
-def init(is_user_human=False, num_targets=8, trigger_threshold=0.2):
-  user_lag = FirstOrderLag(conductivity=0.1, s0 = 0, bounds=[-200,200])
+def init(is_user_human=False, num_targets=8, trigger_threshold=0.1):
+  user_lag = FirstOrderLag(conductivity=0.025, s0 = 0, bounds=[-200,200])
   user_noise = Gaussian(stdev=20.)
   sim_user = NoisyLag(lag=user_lag, noise=user_noise)
 
@@ -238,7 +238,7 @@ def init(is_user_human=False, num_targets=8, trigger_threshold=0.2):
   }
   # close the loop with human user
   # filter energy for selection trigger
-  agents['trigger_in'] = FirstOrderLag(conductivity=0.05, s0 = np.ones(num_targets) * agents['ui'].energy_start)
+  agents['trigger_in'] = FirstOrderLag(conductivity=0.02, s0 = np.ones(num_targets) * agents['ui'].energy_start)
   # trigger by thresholding
   agents['trigger_out'] = lambda inputs: inputs < trigger_threshold * agents['ui'].energy_start
   
